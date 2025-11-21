@@ -325,8 +325,60 @@ variables:
         {{ brightness }}
       {% endif %}
     {% endif %}
-
+    
 action:
+  - service: logbook.log
+    data:
+      name: "Sun Brightness Blueprint Debug"
+      message: >
+        light_target = {{ light_target }}
+        seg1_clock = "{{ seg1_clock }}"
+        seg1_elev_str = "{{ seg1_elev_str }}"
+        seg1_brightness = {{ seg1_brightness }}
+  
+        seg2_clock = "{{ seg2_clock }}"
+        seg2_elev_str = "{{ seg2_elev_str }}"
+        seg2_brightness = {{ seg2_brightness }}
+  
+        seg3_clock = "{{ seg3_clock }}"
+        seg3_elev_str = "{{ seg3_elev_str }}"
+        seg3_brightness_start = {{ seg3_brightness_start }}
+  
+        seg3_end_clock = "{{ seg3_end_clock }}"
+        seg3_end_elev_str = "{{ seg3_end_elev_str }}"
+        seg3_brightness_end = {{ seg3_brightness_end }}
+  
+        seg1_clock_ts = {{ seg1_clock_ts }}
+        seg1_elev_ts = {{ seg1_elev_ts }}
+        seg1_start = {{ seg1_start }}
+  
+        seg2_clock_ts = {{ seg2_clock_ts }}
+        seg2_elev_ts = {{ seg2_elev_ts }}
+        seg2_start = {{ seg2_start }}
+  
+        seg3_clock_ts = {{ seg3_clock_ts }}
+        seg3_elev_ts = {{ seg3_elev_ts }}
+        seg3_start = {{ seg3_start }}
+  
+        seg3_end_clock_ts = {{ seg3_end_clock_ts }}
+        seg3_end_elev_ts = {{ seg3_end_elev_ts }}
+        seg3_end = {{ seg3_end }}
+  
+        in_seg1 = {{ in_seg1 }}
+        in_seg2 = {{ in_seg2 }}
+        in_seg3 = {{ in_seg3 }}
+  
+        now_ts = {{ now_ts }}
+  
+        t0 = {{ t0 if (in_seg1 or in_seg2 or in_seg3) else 'none' }}
+        t1 = {{ t1 if (in_seg1 or in_seg2 or in_seg3) else 'none' }}
+        duration = {{ duration if (in_seg1 or in_seg2 or in_seg3) else 'none' }}
+        p = {{ p if (in_seg1 or in_seg2 or in_seg3) else 'none' }}
+  
+        current_pct = {{ current_pct if (in_seg1 or in_seg2 or in_seg3) else 'none' }}
+        brightness = {{ brightness if (in_seg1 or in_seg2 or in_seg3) else 'none' }}
+  
+        target_brightness = {{ target_brightness }}
   - choose:
       - conditions: "{{ target_brightness is not none }}"
         sequence:
