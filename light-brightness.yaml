@@ -418,4 +418,5 @@ action:
               entity_id: "{{ light_target }}"
             data:
               brightness_pct: "{{ target_brightness | float | round(0) }}"
+              transition: 30
     default: []
