@@ -1,0 +1,338 @@
+blueprint:
+  name: Sun-segmented light brightness (3 segments)
+  description: >
+    Control a light's brightness based on 3 logical segments defined by
+    clock times and/or sun elevation angles, with linear ramps between
+    segment brightnesses.
+  domain: automation
+
+  input:
+    light_target:
+      name: Target light
+      selector:
+        entity:
+          domain: light
+
+    # -------- Segment 1 --------
+    seg1_start_time:
+      name: Segment 1 start - clock time (optional)
+      description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg1_start_elev:
+      name: Segment 1 start - sun elevation (optional)
+      description: 'Degrees. Example: -6 for civil dusk. Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg1_brightness:
+      name: Segment 1 starting brightness (%)
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+    # -------- Segment 2 --------
+    seg2_start_time:
+      name: Segment 2 start - clock time (optional)
+      description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg2_start_elev:
+      name: Segment 2 start - sun elevation (optional)
+      description: 'Degrees. Example: 5 for morning golden hour. Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg2_brightness:
+      name: Segment 2 starting brightness (%)
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+    # -------- Segment 3 --------
+    seg3_start_time:
+      name: Segment 3 start - clock time (optional)
+      description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg3_start_elev:
+      name: Segment 3 start - sun elevation (optional)
+      description: 'Degrees. Example: -2 for late dusk. Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg3_brightness_start:
+      name: Segment 3 starting brightness (%)
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+    seg3_end_time:
+      name: Segment 3 end - clock time (optional)
+      description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg3_end_elev:
+      name: Segment 3 end - sun elevation (optional)
+      description: 'Degrees. Example: -12 for astronomical. Leave blank to ignore.'
+      default: ""
+      selector:
+        text: {}
+
+    seg3_brightness_end:
+      name: Segment 3 ending brightness (%)
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+mode: single
+
+trigger:
+  - platform: time_pattern
+    minutes: "/5"
+
+variables:
+  light_target: !input light_target
+
+  # Raw blueprint inputs
+  seg1_clock: !input seg1_start_time
+  seg1_elev_str: !input seg1_start_elev
+  seg1_brightness: !input seg1_brightness
+
+  seg2_clock: !input seg2_start_time
+  seg2_elev_str: !input seg2_start_elev
+  seg2_brightness: !input seg2_brightness
+
+  seg3_clock: !input seg3_start_time
+  seg3_elev_str: !input seg3_start_elev
+  seg3_brightness_start: !input seg3_brightness_start
+
+  seg3_end_clock: !input seg3_end_time
+  seg3_end_elev_str: !input seg3_end_elev
+  seg3_brightness_end: !input seg3_brightness_end
+
+  # Main calculation: target brightness (0-100) or 'none' if no segment
+  target_brightness: >
+    {% macro sun_time_at_elevation(target_elev, ref_dt) %}
+      {% set target = target_elev | float %}
+      {% set ref = as_datetime(ref_dt) %}
+      {% if ref is none %}
+        {{ none }}
+      {% else %}
+        {# namespace to carry best result across loop iterations #}
+        {% set ns = namespace(best_t = ref, best_diff = 9999.0) %}
+    
+        {# --------- COARSE SEARCH: ±12h in 10-min steps --------- #}
+        {% set start = ref - timedelta(hours=12) %}
+        {% for i in range(0, 24 * 6 + 1) %} {# 24h * 6 steps/hour = 144 steps #}
+          {% set t_candidate = start + timedelta(minutes = 10 * i) %}
+          {% set elev = sun_elevation_at_datetime(t_candidate) | float %}
+          {% set diff = (elev - target) | abs %}
+          {% if diff < ns.best_diff %}
+            {% set ns.best_diff = diff %}
+            {% set ns.best_t = t_candidate %}
+          {% endif %}
+        {% endfor %}
+    
+        {# --------- FINE SEARCH: ±20m around best_t in 1-min steps --------- #}
+        {% set ns.best_diff = 9999.0 %}
+        {% set fine_start = ns.best_t - timedelta(minutes=20) %}
+        {% for i in range(0, 40 + 1) %} {# 41 minutes: -20..+20 #}
+          {% set t_candidate = fine_start + timedelta(minutes = i) %}
+          {% set elev = sun_elevation_at_datetime(t_candidate) | float %}
+          {% set diff = (elev - target) | abs %}
+          {% if diff < ns.best_diff %}
+            {% set ns.best_diff = diff %}
+            {% set ns.best_t = t_candidate %}
+          {% endif %}
+        {% endfor %}
+    
+        {{ ns.best_t.timestamp() }}
+      {% endif %}
+    {% endmacro %}
+
+    {% set now_dt = now().replace(microsecond=0) %}
+    {% set now_ts = as_timestamp(now_dt) %}
+    {# Use today's noon as a stable reference for elevation crossings #}
+    {% set ref_noon = now_dt.replace(hour=12, minute=0, second=0) %}
+
+    {# --- helper: clock string -> next occurrence timestamp --- #}
+    {% macro next_clock_ts(clock_str) %}
+      {% set s = (clock_str or '') | trim %}
+      {% if s == '' %}
+        {{ none }}
+      {% else %}
+        {% set parts = s.split(':') %}
+        {% set h = parts[0] | int %}
+        {% set m = (parts[1] | int) if parts | count > 1 else 0 %}
+        {% set sec = (parts[2] | int) if parts | count > 2 else 0 %}
+        {% set candidate = now_dt.replace(hour=h, minute=m, second=sec) %}
+        {% if candidate < now_dt %}
+          {% set dt = candidate + timedelta(days=1) %}
+        {% else %}
+          {% set dt = candidate %}
+        {% endif %}
+        {{ as_timestamp(dt) }}
+      {% endif %}
+    {% endmacro %}
+
+    {# --- helper: elevation string -> timestamp via sun_time_at_elevation --- #}
+    {% macro elev_ts(elev_str) %}
+      {% set s = (elev_str or '') | trim %}
+      {% if s == '' %}
+        {{ none }}
+      {% else %}
+        {{ sun_time_at_elevation(s | float, ref_noon) }}
+      {% endif %}
+    {% endmacro %}
+
+    {# --- helper: earliest of two candidate timestamps (which may be 'none') --- #}
+    {% macro earliest(a, b) %}
+      {% set candidates = [] %}
+      {% if a is not none %}
+        {% set _ = candidates.append(a | float) %}
+      {% endif %}
+      {% if b is not none %}
+        {% set _ = candidates.append(b | float) %}
+      {% endif %}
+      {% if candidates | count > 0 %}
+        {{ (candidates | min) }}
+      {% else %}
+        {{ none }}
+      {% endif %}
+    {% endmacro %}
+
+    {# --- compute segment boundary timestamps --- #}
+    {% set seg1_clock_ts = next_clock_ts(seg1_clock) %}
+    {% set seg1_elev_ts  = elev_ts(seg1_elev_str) %}
+    {% set seg1_start    = earliest(seg1_clock_ts, seg1_elev_ts) %}
+
+    {% set seg2_clock_ts = next_clock_ts(seg2_clock) %}
+    {% set seg2_elev_ts  = elev_ts(seg2_elev_str) %}
+    {% set seg2_start    = earliest(seg2_clock_ts, seg2_elev_ts) %}
+
+    {% set seg3_clock_ts = next_clock_ts(seg3_clock) %}
+    {% set seg3_elev_ts  = elev_ts(seg3_elev_str) %}
+    {% set seg3_start    = earliest(seg3_clock_ts, seg3_elev_ts) %}
+
+    {% set seg3_end_clock_ts = next_clock_ts(seg3_end_clock) %}
+    {% set seg3_end_elev_ts  = elev_ts(seg3_end_elev_str) %}
+    {% set seg3_end          = earliest(seg3_end_clock_ts, seg3_end_elev_ts) %}
+
+    {# Parse brightnesses as floats #}
+    {% set b1_start = seg1_brightness | float %}
+    {% set b2_start = seg2_brightness | float %}
+    {% set b3_start = seg3_brightness_start | float %}
+    {% set b3_end   = seg3_brightness_end | float %}
+
+    {# Decide which segment (if any) we are currently in #}
+    {% set in_seg1 = (
+      seg1_start is not none and
+      seg2_start is not none and
+      seg1_start | float <= now_ts < seg2_start | float
+    ) %}
+
+    {% set in_seg2 = (
+      seg2_start is not none and
+      seg3_start is not none and
+      seg2_start | float <= now_ts < seg3_start | float
+    ) %}
+
+    {% set in_seg3 = (
+      seg3_start is not none and
+      seg3_end is not none and
+      seg3_start | float <= now_ts < seg3_end | float
+    ) %}
+
+    {# Default: no segment => do nothing #}
+    {% if not (in_seg1 or in_seg2 or in_seg3) %}
+      {{ none }}
+    {% else %}
+
+      {% if in_seg1 %}
+        {% set t0 = seg1_start | float %}
+        {% set t1 = seg2_start | float %}
+        {% set b0 = b1_start %}
+        {% set b1 = b2_start %}
+      {% elif in_seg2 %}
+        {% set t0 = seg2_start | float %}
+        {% set t1 = seg3_start | float %}
+        {% set b0 = b2_start %}
+        {% set b1 = b3_start %}
+      {% else %}
+        {# in_seg3 #}
+        {% set t0 = seg3_start | float %}
+        {% set t1 = seg3_end | float %}
+        {% set b0 = b3_start %}
+        {% set b1 = b3_end %}
+      {% endif %}
+
+      {# Linear progress within the segment, clamped 0..1 #}
+      {% set duration = t1 - t0 %}
+      {% if duration <= 0 %}
+        {% set p = 0 %}
+      {% else %}
+        {% set p = (now_ts - t0) / duration %}
+        {% if p < 0 %}
+          {% set p = 0 %}
+        {% elif p > 1 %}
+          {% set p = 1 %}
+        {% endif %}
+      {% endif %}
+
+      {# Lerp brightness between b0 and b1 #}
+      {% set brightness = b0 + (b1 - b0) * p %}
+      
+      {# Current brightness of the light, in % (0-100) #}
+      {% set current_raw = state_attr(light_target, 'brightness') %}
+      {% if current_raw is none %}
+        {% set current_pct = 0 %}
+      {% else %}
+        {% set current_pct = (current_raw | float) / 255 * 100 %}
+      {% endif %}
+
+      {# In segments 1 and 2, never dim: if new < current, do nothing #}
+      {% if (in_seg1 or in_seg2) and brightness < current_pct %}
+        {{ none }}
+      {% else %}
+        {{ brightness }}
+      {% endif %}
+    {% endif %}
+
+action:
+  - choose:
+      - conditions: "{{ target_brightness is not none }}"
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: "{{ light_target }}"
+            data:
+              brightness_pct: "{{ target_brightness | float | round(0) }}"
+    default: []
