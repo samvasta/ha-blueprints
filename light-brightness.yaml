@@ -17,7 +17,7 @@ blueprint:
     seg1_start_time:
       name: Segment 1 start - clock time (optional)
       description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
-      default: ""
+      default: "16:00:00"
       selector:
         text: {}
 
@@ -49,13 +49,13 @@ blueprint:
     seg2_start_elev:
       name: Segment 2 start - sun elevation (optional)
       description: 'Degrees. Example: 5 for morning golden hour. Leave blank to ignore.'
-      default: ""
+      default: "6"
       selector:
         text: {}
 
     seg2_brightness:
       name: Segment 2 starting brightness (%)
-      default: 50
+      default: 100
       selector:
         number:
           min: 0
@@ -67,14 +67,14 @@ blueprint:
     seg3_start_time:
       name: Segment 3 start - clock time (optional)
       description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
-      default: ""
+      default: "22:30"
       selector:
         text: {}
 
     seg3_start_elev:
       name: Segment 3 start - sun elevation (optional)
       description: 'Degrees. Example: -2 for late dusk. Leave blank to ignore.'
-      default: ""
+      default: "-18"
       selector:
         text: {}
 
@@ -91,7 +91,7 @@ blueprint:
     seg3_end_time:
       name: Segment 3 end - clock time (optional)
       description: 'Format "HH:MM" or "HH:MM:SS". Leave blank to ignore.'
-      default: ""
+      default: "23:30"
       selector:
         text: {}
 
@@ -139,20 +139,75 @@ variables:
   seg3_brightness_end: !input seg3_brightness_end
 
   # Main calculation: target brightness (0-100) or 'none' if no segment
-  target_brightness: >
+  target_brightness: >-
+    {% macro sun_elevation_at_datetime(dt) %}
+      {% set t = as_datetime(dt) %}
+      {% if t is none %}
+        {{ none }}
+      {% else %}
+        {% set lat = state_attr('zone.home', 'latitude') | float %}
+        {% set lon = state_attr('zone.home', 'longitude') | float %}
+        {% set deg2rad = pi / 180 %}
+        {% set rad2deg = 180 / pi %}
+
+        {# Julian Day #}
+        {% set jd = t.timestamp() / 86400 + 2440587.5 %}
+        {% set T = (jd - 2451545.0) / 36525 %}
+
+        {# NOAA solar terms #}
+        {% set L0 = 280.46646 + 36000.76983 * T %}
+        {% set M  = 357.52911 + 35999.05029 * T %}
+        {% set C  =
+          (1.914602 - 0.004817 * T - 0.000014 * T * T) * sin(M * deg2rad)
+          + (0.019993 - 0.000101 * T) * sin(2 * M * deg2rad)
+          + 0.000289 * sin(3 * M * deg2rad)
+        %}
+        {% set lambda = L0 + C %}
+        {% set lambda_r = lambda * deg2rad %}
+
+        {% set eps = 23.439291 - 0.0130042 * T %}
+        {% set eps_r = eps * deg2rad %}
+
+        {# Declination #}
+        {% set dec = asin(sin(eps_r) * sin(lambda_r)) %}
+        {% set lat_r = lat * deg2rad %}
+
+        {# Sidereal time #}
+        {% set GST = 280.46061837 + 360.98564736629 * (jd - 2451545) %}
+        {% set LST = GST + lon %}
+        {% set LST_r = LST * deg2rad %}
+
+        {# Right ascension #}
+        {% set ra = atan2(
+          cos(eps_r) * sin(lambda_r),
+          cos(lambda_r)
+        ) %}
+
+        {# Hour angle #}
+        {% set H = LST_r - ra %}
+
+        {# Elevation #}
+        {% set elev_r = asin(
+          sin(lat_r) * sin(dec) +
+          cos(lat_r) * cos(dec) * cos(H)
+        ) %}
+
+        {{ (elev_r * rad2deg) | float }}
+      {% endif %}
+    {% endmacro %}
+
     {% macro sun_time_at_elevation(target_elev, ref_dt) %}
       {% set target = target_elev | float %}
       {% set ref = as_datetime(ref_dt) %}
       {% if ref is none %}
-        {{ none }}
+        None
       {% else %}
-        {# namespace to carry best result across loop iterations #}
-        {% set ns = namespace(best_t = ref, best_diff = 9999.0) %}
-    
-        {# --------- COARSE SEARCH: ±12h in 10-min steps --------- #}
+        {% set ns = namespace(best_t=ref, best_diff=999999) %}
+
+        {# --- coarse search (10min steps) --- #}
         {% set start = ref - timedelta(hours=12) %}
-        {% for i in range(0, 24 * 6 + 1) %} {# 24h * 6 steps/hour = 144 steps #}
-          {% set t_candidate = start + timedelta(minutes = 10 * i) %}
+        {% for i in range(0, 24*6 + 1) %}
+          {% set t_candidate = start + timedelta(minutes=10*i) %}
           {% set elev = sun_elevation_at_datetime(t_candidate) | float %}
           {% set diff = (elev - target) | abs %}
           {% if diff < ns.best_diff %}
@@ -160,12 +215,12 @@ variables:
             {% set ns.best_t = t_candidate %}
           {% endif %}
         {% endfor %}
-    
-        {# --------- FINE SEARCH: ±20m around best_t in 1-min steps --------- #}
-        {% set ns.best_diff = 9999.0 %}
+
+        {# --- fine search (1min steps) --- #}
+        {% set ns.best_diff = 999999 %}
         {% set fine_start = ns.best_t - timedelta(minutes=20) %}
-        {% for i in range(0, 40 + 1) %} {# 41 minutes: -20..+20 #}
-          {% set t_candidate = fine_start + timedelta(minutes = i) %}
+        {% for i in range(0, 41) %}
+          {% set t_candidate = fine_start + timedelta(minutes=i) %}
           {% set elev = sun_elevation_at_datetime(t_candidate) | float %}
           {% set diff = (elev - target) | abs %}
           {% if diff < ns.best_diff %}
@@ -173,26 +228,21 @@ variables:
             {% set ns.best_t = t_candidate %}
           {% endif %}
         {% endfor %}
-    
-        {{ ns.best_t.timestamp() }}
+
+        {{ as_timestamp(ns.best_t) }}
       {% endif %}
     {% endmacro %}
 
-    {% set now_dt = now().replace(microsecond=0) %}
-    {% set now_ts = as_timestamp(now_dt) %}
-    {# Use today's noon as a stable reference for elevation crossings #}
-    {% set ref_noon = now_dt.replace(hour=12, minute=0, second=0) %}
-
-    {# --- helper: clock string -> next occurrence timestamp --- #}
     {% macro next_clock_ts(clock_str) %}
       {% set s = (clock_str or '') | trim %}
-      {% if s == '' %}
-        {{ none }}
+      {% if s == "" %}
+        None
       {% else %}
-        {% set parts = s.split(':') %}
+        {% set parts = s.split(":") %}
         {% set h = parts[0] | int %}
-        {% set m = (parts[1] | int) if parts | count > 1 else 0 %}
-        {% set sec = (parts[2] | int) if parts | count > 2 else 0 %}
+        {% set m = (parts[1] | int) if parts|count > 1 else 0 %}
+        {% set sec = (parts[2] | int) if parts|count > 2 else 0 %}
+        {% set now_dt = now().replace(microsecond=0) %}
         {% set candidate = now_dt.replace(hour=h, minute=m, second=sec) %}
         {% if candidate < now_dt %}
           {% set dt = candidate + timedelta(days=1) %}
@@ -203,79 +253,65 @@ variables:
       {% endif %}
     {% endmacro %}
 
-    {# --- helper: elevation string -> timestamp via sun_time_at_elevation --- #}
     {% macro elev_ts(elev_str) %}
       {% set s = (elev_str or '') | trim %}
-      {% if s == '' %}
-        {{ none }}
+      {% if s == "" %}
+        None
       {% else %}
-        {{ sun_time_at_elevation(s | float, ref_noon) }}
+        {% set ref = now().replace(hour=23,minute=59,second=0,microsecond=0) %}
+        {{ sun_time_at_elevation(s|float, ref)|trim }}
       {% endif %}
     {% endmacro %}
 
-    {# --- helper: earliest of two candidate timestamps (which may be 'none') --- #}
     {% macro earliest(a, b) %}
-      {% set candidates = [] %}
-      {% if a is not none %}
-        {% set _ = candidates.append(a | float) %}
-      {% endif %}
-      {% if b is not none %}
-        {% set _ = candidates.append(b | float) %}
-      {% endif %}
-      {% if candidates | count > 0 %}
-        {{ (candidates | min) }}
+      {% if a == "None" or a is none %}
+        {% if b == "None" or b is none %}
+          None
+        {% else %}
+          {{ b }}
+        {% endif %}
       {% else %}
-        {{ none }}
+        {% if b == "None" or b is none %}
+          {{ a }}
+        {% else %}
+          {{ (a|float, b|float) | min }}
+        {% endif %}
       {% endif %}
     {% endmacro %}
 
-    {# --- compute segment boundary timestamps --- #}
-    {% set seg1_clock_ts = next_clock_ts(seg1_clock) %}
-    {% set seg1_elev_ts  = elev_ts(seg1_elev_str) %}
-    {% set seg1_start    = earliest(seg1_clock_ts, seg1_elev_ts) %}
+    {% set now_ts = as_timestamp(now()) %} {% set seg1_clock_ts =
+    next_clock_ts(seg1_clock)|trim %} {% set seg1_elev_ts =
+    elev_ts(seg1_elev_str)|trim %} {% set seg1_start =
+    earliest(seg1_clock_ts, seg1_elev_ts)|trim %}
+      
+    {% set seg2_clock_ts = next_clock_ts(seg2_clock)|trim %} {% set
+    seg2_elev_ts = elev_ts(seg2_elev_str)|trim %} {% set seg2_start =
+    earliest(seg2_clock_ts, seg2_elev_ts)|trim %}
+      
+    {% set seg3_clock_ts = next_clock_ts(seg3_clock)|trim %} {% set
+    seg3_elev_ts = elev_ts(seg3_elev_str)|trim %} {% set seg3_start =
+    earliest(seg3_clock_ts, seg3_elev_ts)|trim %}
+      
+    {% set seg3_end_clock_ts = next_clock_ts(seg3_end_clock)|trim %} {% set
+    seg3_end_elev_ts = elev_ts(seg3_end_elev_str)|trim %} {% set seg3_end =
+    earliest(seg3_end_clock_ts, seg3_end_elev_ts)|trim %}
+      
+    {% set b1_start = seg1_brightness | float %} {% set b2_start =
+    seg2_brightness | float %} {% set b3_start = seg3_brightness_start |
+    float %} {% set b3_end = seg3_brightness_end | float %} {% set in_seg1 =
+    seg1_start != "None" and seg2_start != "None" and (seg1_start | float)
+    <= now_ts < (seg2_start | float) %} {% set in_seg2 = seg2_start !=
+    "None" and seg3_start != "None" and (seg2_start | float) <= now_ts <
+    (seg3_start | float) %} {% set in_seg3 = seg3_start != "None" and
+    seg3_end != "None" and (seg3_start | float) <= now_ts < (seg3_end |
+    float) %}
 
-    {% set seg2_clock_ts = next_clock_ts(seg2_clock) %}
-    {% set seg2_elev_ts  = elev_ts(seg2_elev_str) %}
-    {% set seg2_start    = earliest(seg2_clock_ts, seg2_elev_ts) %}
-
-    {% set seg3_clock_ts = next_clock_ts(seg3_clock) %}
-    {% set seg3_elev_ts  = elev_ts(seg3_elev_str) %}
-    {% set seg3_start    = earliest(seg3_clock_ts, seg3_elev_ts) %}
-
-    {% set seg3_end_clock_ts = next_clock_ts(seg3_end_clock) %}
-    {% set seg3_end_elev_ts  = elev_ts(seg3_end_elev_str) %}
-    {% set seg3_end          = earliest(seg3_end_clock_ts, seg3_end_elev_ts) %}
-
-    {# Parse brightnesses as floats #}
-    {% set b1_start = seg1_brightness | float %}
-    {% set b2_start = seg2_brightness | float %}
-    {% set b3_start = seg3_brightness_start | float %}
-    {% set b3_end   = seg3_brightness_end | float %}
-
-    {# Decide which segment (if any) we are currently in #}
-    {% set in_seg1 = (
-      seg1_start is not none and
-      seg2_start is not none and
-      seg1_start | float <= now_ts < seg2_start | float
-    ) %}
-
-    {% set in_seg2 = (
-      seg2_start is not none and
-      seg3_start is not none and
-      seg2_start | float <= now_ts < seg3_start | float
-    ) %}
-
-    {% set in_seg3 = (
-      seg3_start is not none and
-      seg3_end is not none and
-      seg3_start | float <= now_ts < seg3_end | float
-    ) %}
-
-    {# Default: no segment => do nothing #}
-    {% if not (in_seg1 or in_seg2 or in_seg3) %}
-      {{ none }}
+    {# If we are in no active segment, do nothing #} {% if not (in_seg1 or
+    in_seg2 or in_seg3) %}
+      None
     {% else %}
 
+      {# ---------------- Pick segment start/end + brightness ---------------- #}
       {% if in_seg1 %}
         {% set t0 = seg1_start | float %}
         {% set t1 = seg2_start | float %}
@@ -287,40 +323,35 @@ variables:
         {% set b0 = b2_start %}
         {% set b1 = b3_start %}
       {% else %}
-        {# in_seg3 #}
         {% set t0 = seg3_start | float %}
         {% set t1 = seg3_end | float %}
         {% set b0 = b3_start %}
         {% set b1 = b3_end %}
       {% endif %}
 
-      {# Linear progress within the segment, clamped 0..1 #}
+      {# ---- Compute position in segment ---- #}
       {% set duration = t1 - t0 %}
       {% if duration <= 0 %}
         {% set p = 0 %}
       {% else %}
         {% set p = (now_ts - t0) / duration %}
-        {% if p < 0 %}
-          {% set p = 0 %}
-        {% elif p > 1 %}
-          {% set p = 1 %}
-        {% endif %}
+        {% set p = 0 if p < 0 else (1 if p > 1 else p) %}
       {% endif %}
 
-      {# Lerp brightness between b0 and b1 #}
+      {# ---- LERP brightness ---- #}
       {% set brightness = b0 + (b1 - b0) * p %}
-      
-      {# Current brightness of the light, in % (0-100) #}
-      {% set current_raw = state_attr(light_target, 'brightness') %}
-      {% if current_raw is none %}
+
+      {# ---- Check current light brightness (0-100) ---- #}
+      {% set raw = state_attr(light_target, "brightness") %}
+      {% if raw is none %}
         {% set current_pct = 0 %}
       {% else %}
-        {% set current_pct = (current_raw | float) / 255 * 100 %}
+        {% set current_pct = (raw | float) / 255 * 100 %}
       {% endif %}
-
-      {# In segments 1 and 2, never dim: if new < current, do nothing #}
+      
+      {# ---- Rule: Segments 1 & 2 never dim ---- #}
       {% if (in_seg1 or in_seg2) and brightness < current_pct %}
-        {{ none }}
+        None
       {% else %}
         {{ brightness }}
       {% endif %}
