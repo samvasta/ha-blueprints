@@ -233,7 +233,7 @@ variables:
       {% endif %}
     {% endmacro %}
 
-    {% macro next_clock_ts(clock_str) %}
+    {% macro today_clock_ts(clock_str) %}
       {% set s = (clock_str or '') | trim %}
       {% if s == "" %}
         None
@@ -243,12 +243,7 @@ variables:
         {% set m = (parts[1] | int) if parts|count > 1 else 0 %}
         {% set sec = (parts[2] | int) if parts|count > 2 else 0 %}
         {% set now_dt = now().replace(microsecond=0) %}
-        {% set candidate = now_dt.replace(hour=h, minute=m, second=sec) %}
-        {% if candidate < now_dt %}
-          {% set dt = candidate + timedelta(days=1) %}
-        {% else %}
-          {% set dt = candidate %}
-        {% endif %}
+        {% set dt = now_dt.replace(hour=h, minute=m, second=sec) %}
         {{ as_timestamp(dt) }}
       {% endif %}
     {% endmacro %}
@@ -279,32 +274,30 @@ variables:
       {% endif %}
     {% endmacro %}
 
-    {% set now_ts = as_timestamp(now()) %} {% set seg1_clock_ts =
-    next_clock_ts(seg1_clock)|trim %} {% set seg1_elev_ts =
-    elev_ts(seg1_elev_str)|trim %} {% set seg1_start =
-    earliest(seg1_clock_ts, seg1_elev_ts)|trim %}
+    {% set now_ts = as_timestamp(now()) %}
+    {% set seg1_clock_ts = today_clock_ts(seg1_clock)|trim %}
+    {% set seg1_elev_ts = elev_ts(seg1_elev_str)|trim %}
+    {% set seg1_start = earliest(seg1_clock_ts, seg1_elev_ts)|trim %}
       
-    {% set seg2_clock_ts = next_clock_ts(seg2_clock)|trim %} {% set
-    seg2_elev_ts = elev_ts(seg2_elev_str)|trim %} {% set seg2_start =
-    earliest(seg2_clock_ts, seg2_elev_ts)|trim %}
+    {% set seg2_clock_ts = today_clock_ts(seg2_clock)|trim %}
+    {% set seg2_elev_ts = elev_ts(seg2_elev_str)|trim %}
+    {% set seg2_start = earliest(seg2_clock_ts, seg2_elev_ts)|trim %}
       
-    {% set seg3_clock_ts = next_clock_ts(seg3_clock)|trim %} {% set
-    seg3_elev_ts = elev_ts(seg3_elev_str)|trim %} {% set seg3_start =
-    earliest(seg3_clock_ts, seg3_elev_ts)|trim %}
+    {% set seg3_clock_ts = today_clock_ts(seg3_clock)|trim %}
+    {% set seg3_elev_ts = elev_ts(seg3_elev_str)|trim %}
+    {% set seg3_start = earliest(seg3_clock_ts, seg3_elev_ts)|trim %}
       
-    {% set seg3_end_clock_ts = next_clock_ts(seg3_end_clock)|trim %} {% set
-    seg3_end_elev_ts = elev_ts(seg3_end_elev_str)|trim %} {% set seg3_end =
-    earliest(seg3_end_clock_ts, seg3_end_elev_ts)|trim %}
+    {% set seg3_end_clock_ts = today_clock_ts(seg3_end_clock)|trim %}
+    {% set seg3_end_elev_ts = elev_ts(seg3_end_elev_str)|trim %}
+    {% set seg3_end = earliest(seg3_end_clock_ts, seg3_end_elev_ts)|trim %}
       
-    {% set b1_start = seg1_brightness | float %} {% set b2_start =
-    seg2_brightness | float %} {% set b3_start = seg3_brightness_start |
-    float %} {% set b3_end = seg3_brightness_end | float %} {% set in_seg1 =
-    seg1_start != "None" and seg2_start != "None" and (seg1_start | float)
-    <= now_ts < (seg2_start | float) %} {% set in_seg2 = seg2_start !=
-    "None" and seg3_start != "None" and (seg2_start | float) <= now_ts <
-    (seg3_start | float) %} {% set in_seg3 = seg3_start != "None" and
-    seg3_end != "None" and (seg3_start | float) <= now_ts < (seg3_end |
-    float) %}
+    {% set b1_start = seg1_brightness | float %}
+    {% set b2_start = seg2_brightness | float %}
+    {% set b3_start = seg3_brightness_start | float %}
+    {% set b3_end = seg3_brightness_end | float %}
+    {% set in_seg1 = seg1_start != "None" and seg2_start != "None" and (seg1_start | float) <= now_ts < (seg2_start | float) %}
+    {% set in_seg2 = seg2_start != "None" and seg3_start != "None" and (seg2_start | float) <= now_ts < (seg3_start | float) %}
+    {% set in_seg3 = seg3_start != "None" and seg3_end != "None" and (seg3_start | float) <= now_ts < (seg3_end | float) %}
 
     {# If we are in no active segment, do nothing #} {% if not (in_seg1 or
     in_seg2 or in_seg3) %}
